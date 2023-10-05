@@ -1,6 +1,6 @@
 import org.jenkinsci.plugins.pipeline.modeldefinition.Utils
 
-def DOCKER_IMAGE = 'vastrakhamd/ci-test'
+DOCKER_IMAGE = 'vastrakhamd/ci-test'
 
 def getgputargets() {
     targets="gfx906;gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx1102"
@@ -56,13 +56,10 @@ def rocmtestnode(Map conf) {
                 checkout scm
             }
             gitStatusWrapper(credentialsId: "github-creds", gitHubContext: "Jenkins - ${variant}", account: 'NISHIY-EKSDEE', repo: 'AMDMIGraphX') {
-                docker.withRegistry('https://registry.hub.docker.com', 'DOCKER_HUB_CREDS') {
+                withCredentials([usernamePassword(credentialsId: 'DOCKER_HUB_CREDS', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                    sh "echo $PASS | docker login --username $USER --password-stdin"
                     pre()
-                    try {
-                        sh "docker pull ${DOCKER_IMAGE}:${env.IMAGE_TAG}"
-                    } catch(Exception ex) {
-                        println("Failed to pull")
-                    }
+                    sh "docker pull ${DOCKER_IMAGE}:${env.IMAGE_TAG}"
                     withDockerContainer(image: "${DOCKER_IMAGE}:${env.IMAGE_TAG}", args: "--device=/dev/kfd --device=/dev/dri --group-add video --cap-add SYS_PTRACE -v=/var/jenkins/:/var/jenkins ${docker_args}") {
                         timeout(time: 2, unit: 'HOURS') {
                             body(cmake_build)
@@ -102,14 +99,17 @@ properties([
 ])
 
 node() {
-    println(params.FORCE_DOCKER_IMAGE_BUILD)
     Boolean imageExists = false
-    docker.withRegistry('https://registry.hub.docker.com', 'DOCKER_HUB_CREDS') {
+    withCredentials([usernamePassword(credentialsId: 'DOCKER_HUB_CREDS', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+        sh "echo $PASS | docker login --username $USER --password-stdin"
         stage('Check image') {
-            env.IMAGE_TAG = sh(script: 'sha256sum **/Dockerfile **/*requirements.txt **/install_prereqs.sh **/rbuild.ini | sha256sum | cut -d " " -f 1', returnStdout: true)
-            println(env.IMAGE_TAG)
+            checkout scm
+            def calculateImageTagScript = """
+                shopt -s globstar
+                sha256sum **/Dockerfile **/*requirements.txt **/install_prereqs.sh **/rbuild.ini | sha256sum | cut -d " " -f 1
+            """
+            env.IMAGE_TAG = sh(script: "bash -c '${calculateImageTagScript}'", returnStdout: true).trim()
             imageExists = sh(script: "docker manifest inspect ${DOCKER_IMAGE}:${IMAGE_TAG}", returnStatus: true) == 0
-            println(imageExists)
         }
         stage('Build image') {
             if(!imageExists || params.FORCE_DOCKER_IMAGE_BUILD) {
@@ -121,10 +121,10 @@ node() {
                 } catch(Exception ex) {
                     builtImage = docker.build("${DOCKER_IMAGE}:${IMAGE_TAG}", " --no-cache .")
                 }
-                println(builtImage)
-                builtImage.push("${DOCKER_IMAGE}:${IMAGE_TAG}")
-                builtImage.push("${DOCKER_IMAGE}:latest")
+                builtImage.push("${IMAGE_TAG}")
+                builtImage.push("latest")
             } else {
+                echo "Image already exists, skip building available"
                 // Skip stage so it remains in the visualization
                 Utils.markStageSkippedForConditional(STAGE_NAME)
             }
